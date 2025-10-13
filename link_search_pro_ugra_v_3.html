@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Поиск по ссылкам — UgraRemKomp</title>
+<style>
+:root{
+  --bg:#f6f7f9;--card:#fff;--line:#e5e7eb;--muted:#6b7280;--text:#0f172a;--brand:#19c37d;--accent:#111
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:18px}
+.h1{font-size:28px;font-weight:800;margin:6px 0 14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.inp{flex:1;display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px 10px}
+.inp input{border:0;outline:0;flex:1;font-size:16px}
+.btn{padding:10px 14px;border-radius:12px;border:1px solid var(--brand);background:var(--brand);color:#fff;font-weight:700;cursor:pointer}
+.btn.ghost{background:#fff;color:#111;border-color:var(--line)}
+.small{font-size:13px;color:var(--muted)}
+.count{margin-top:8px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}
+@media (max-width:720px){.grid{grid-template-columns:1fr}}
+.item{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;display:flex;gap:12px;align-items:flex-start}
+.item .ic{width:34px;height:34px;border-radius:8px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;font-size:18px}
+.item h3{margin:0 0 6px;font-size:16px}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#f3f4f6;border:1px solid #e5e7eb;font-size:12px;margin-right:6px}
+.links{display:flex;flex-direction:column;gap:6px}
+.a{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;text-decoration:none;color:#0f172a;background:#fafafa}
+.a:hover{background:#f1f5f9}
+.a .domain{color:#6b7280;font-size:12px}
+.kv{display:flex;gap:10px;flex-wrap:wrap;margin-top:6px}
+.copy{background:#111;border-color:#111}
+.hl{background:#fff59d;padding:0 2px;border-radius:3px}
+.err{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:10px;margin-top:10px;display:none}
+.ok{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;padding:10px;border-radius:10px;margin-top:10px;display:none}
+.toggle{display:flex;gap:12px;align-items:center;margin-top:8px}
+.toggle label{display:flex;gap:6px;align-items:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="h1">Поиск по ссылкам</div>
+  <div class="card">
+    <div class="row">
+      <div class="inp" style="flex:1">
+        <input id="q" placeholder="Например: скачать виндовс, драйвера, активация…" autocomplete="off"/>
+        <button id="clear" class="btn ghost" title="Очистить">Очистить</button>
+        <button id="share" class="btn copy" title="Скопировать ссылку с запросом" style="display:none">Скопировать</button>
+      </div>
+      <button id="export" class="btn ghost" title="Скачать результаты CSV">Экспорт CSV</button>
+    </div>
+    <div class="toggle small">
+      <label><input type="checkbox" id="onlyLinks" checked> Искать только строки, где есть ссылки</label>
+      <span id="meta" class="small"></span>
+    </div>
+    <div id="err" class="err"></div>
+    <div id="ok" class="ok"></div>
+  </div>
+
+  <div id="list" class="grid" style="display:none"></div>
+</div>
+
+<script>
+/* === НАСТРОЙКИ ===
+   1) Поставьте вашу ПУБЛИЧНУЮ CSV-ссылку Google Sheets (output=csv)
+   2) Данные могут быть в 2+ колонках. Скрипт сам найдет ссылочные поля.
+*/
+const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ-WdDNW6jAX7FGPWKeWGwqhUTu9dGtxXvRir6JYrZ8HmibpNaLt2X6X25NcrWDXf5q_hZax2jeuSeEf/pub?output=csv";
+
+// ===== Утилиты
+const norm = s => String(s||"").toLowerCase().replaceAll('ё','е');
+const esc = s => String(s).replace(/[&<>\"]/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m]));
+const isURL = v => /^https?:\/\//i.test(String(v||"").trim());
+const domain = u => { try{ return new URL(u).hostname.replace(/^www\./,''); }catch{ return ''; } };
+
+function parseCSV(text){
+  const first = text.split(/\r?\n/,1)[0]||"";
+  const sep = (first.split(';').length-1) > (first.split(',').length-1) ? ';' : ',';
+  const rows=[], row=[], pushRow=()=>{ if(row.length) rows.push(row.splice(0)); };
+  let cell="", q=false;
+  for(let i=0;i<text.length;i++){
+    const ch=text[i];
+    if(q){ if(ch=='"'){ if(text[i+1]=='"'){cell+='"';i++;} else q=false; } else cell+=ch; continue; }
+    if(ch=='"'){ q=true; continue; }
+    if(ch==sep){ row.push(cell); cell=""; continue; }
+    if(ch=='\n'){ row.push(cell); cell=""; pushRow(); continue; }
+    if(ch=='\r'){ continue; }
+    cell+=ch;
+  }
+  if(cell!==""||row.length){ row.push(cell); pushRow(); }
+  return rows.filter(r=>r.some(c=>String(c).trim()!==""));
+}
+
+// ===== Данные
+let HEAD=[], DATA=[], VIEW=[];
+
+async function fetchCSV(url){
+  const res = await fetch(url,{cache:'no-store'});
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
+  const txt = await res.text();
+  if(!txt.trim()) throw new Error('Пустой CSV');
+  return parseCSV(txt);
+}
+
+function highlight(text, q){
+  if(!q) return esc(text);
+  try{
+    const re = new RegExp('('+q.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\$&')+')','ig');
+    return esc(text).replace(re,'<span class="hl">$1<\/span>');
+  }catch{ return esc(text); }
+}
+
+function toItems(rows){
+  // Превращаем строки CSV в сущности: {title, links[], raw}
+  const items=[];
+  for(const r of rows){
+    const links = r.filter(isURL);
+    if(!links.length) { items.push({title: r.find(x=>!isURL(x))||r[0]||'', links: [], raw:r}); continue; }
+    const title = r.find(x=>!isURL(x)) || r[0] || links[0];
+    items.push({title, links, raw:r});
+  }
+  return items;
+}
+
+function applyFilter(){
+  const qv = document.getElementById('q').value.trim();
+  const onlyLinks = document.getElementById('onlyLinks').checked;
+  const q = norm(qv);
+  let items = toItems(DATA);
+  if(onlyLinks) items = items.filter(x=>x.links && x.links.length);
+  if(q){
+    items = items.filter(x=> norm(x.title).includes(q) || (x.links||[]).some(h=> norm(h).includes(q)) || x.raw.some(c=> norm(c).includes(q)) );
+  }
+  VIEW = items;
+  render(qv);
+  const ok = document.getElementById('ok');
+  ok.textContent = `Найдено: ${VIEW.length}`;
+  ok.style.display='block';
+}
+
+function render(qv){
+  const box = document.getElementById('list');
+  if(!VIEW.length){ box.style.display='none'; return; }
+  const html = VIEW.map(x=>{
+    const title = highlight(x.title, qv);
+    const links = (x.links&&x.links.length? x.links: []).map(u=>
+      `<div class="kv">
+         <a class="a" href="${esc(u)}" target="_blank" rel="noopener">
+           <span>${highlight(u, qv)}</span>
+           <span class="domain">${esc(domain(u))}</span>
+         </a>
+         <button class="btn ghost" data-copy="${esc(u)}">Копировать</button>
+       </div>`
+    ).join('');
+    const badges = x.links && x.links.length ? `<span class="badge">ссылок: ${x.links.length}<\/span>` : `<span class="badge">без ссылки<\/span>`;
+    return `<div class="item">
+      <div class="ic">🔗<\/div>
+      <div style="flex:1">
+        <h3>${title}</h3>
+        <div>${badges}</div>
+        <div class="links" style="margin-top:8px">${links||''}</div>
+      <\/div>
+    <\/div>`;
+  }).join('');
+  box.innerHTML = html;
+  box.style.display='grid';
+  // copy handlers
+  box.querySelectorAll('button[data-copy]').forEach(b=>{
+    b.onclick = async ()=>{
+      try{ await navigator.clipboard.writeText(b.getAttribute('data-copy')); showOk('Ссылка скопирована'); }catch{ /* ignore */ }
+    };
+  });
+}
+
+function showOk(msg){ const el=document.getElementById('ok'); el.textContent=msg; el.style.display='block'; }
+function showErr(msg){ const el=document.getElementById('err'); el.textContent=msg; el.style.display='block'; }
+function setShare(){ const q=document.getElementById('q').value.trim(); const u=new URL(location.href); if(q) u.searchParams.set('q',q); else u.searchParams.delete('q'); history.replaceState(null,'',u); document.getElementById('share').style.display=q?'' :'none'; }
+
+async function init(){
+  try{
+    const rows = await fetchCSV(CSV_URL);
+    HEAD = rows[0]||[]; DATA = rows.slice(1);
+    document.getElementById('meta').textContent = `Источник: Google Sheets CSV · Колонок: ${HEAD.length} · Строк: ${DATA.length}`;
+    // авто из ?q=
+    const p = new URL(location.href).searchParams.get('q')||'';
+    if(p) document.getElementById('q').value=p;
+    setShare();
+    applyFilter();
+  }catch(e){ showErr('Ошибка: '+(e.message||e)); }
+}
+
+// events
+let deb; document.getElementById('q').addEventListener('input',()=>{clearTimeout(deb); deb=setTimeout(()=>{ setShare(); applyFilter(); }, 120);});
+
+document.getElementById('onlyLinks').addEventListener('change', applyFilter);
+
+document.getElementById('export').addEventListener('click', ()=>{
+  if(!VIEW.length) return;
+  const rows = VIEW.map(x=>[x.title, ...(x.links||[''])]);
+  const out = [['title','link1','link2','...']].concat(rows).map(r=>r.map(v=>{const s=String(v??'');return /[",\n;]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\n');
+  const blob = new Blob([out],{type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='links-export.csv'; a.click(); URL.revokeObjectURL(a.href);
+});
+
+document.getElementById('clear').addEventListener('click',()=>{ document.getElementById('q').value=''; setShare(); applyFilter(); });
+
+document.getElementById('share').addEventListener('click', async ()=>{ try{ await navigator.clipboard.writeText(location.href); showOk('Ссылка на поиск скопирована'); }catch{} });
+
+init();
+</script>
+</body>
+</html>
