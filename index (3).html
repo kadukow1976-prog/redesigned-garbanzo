@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Поиск по базе — UgraRemKomp</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--line:#e5e7eb;--text:#111827;--muted:#6b7280;--brand:#19c37d;--ink:#111}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif}
+.wrap{max-width:1000px;margin:0 auto;padding:18px}
+h1{margin:0 0 10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input[type="text"]{padding:12px;border:1px solid var(--line);border-radius:12px;font-size:16px;flex:1}
+select{padding:10px 12px;border:1px solid var(--line);border-radius:12px;font-size:15px}
+.btn{padding:12px 16px;border-radius:12px;background:var(--brand);border:1px solid var(--brand);color:#fff;font-weight:700;cursor:pointer}
+.btn.ghost{background:#fff;color:var(--ink);border-color:var(--line)}
+.small{color:var(--muted);font-size:13px}
+.err{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;padding:10px;border-radius:10px;margin-top:10px;display:none}
+.ok{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;padding:10px;border-radius:10px;margin-top:10px;display:none}
+.results{display:grid;grid-template-columns:1fr;gap:10px;margin-top:12px}
+.cardItem{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;justify-content:space-between;gap:10px;align-items:center}
+.cardItem h3{margin:0;font-size:16px}
+.cardItem .link{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:52vw}
+.cardItem .go{white-space:nowrap}
+.table{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:auto}
+.table table{width:100%;border-collapse:collapse}
+.table th,.table td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
+.table th{background:#fafafa;text-align:left;position:sticky;top:0;z-index:1}
+mark{background:#fff59d}
+@media (min-width:760px){ .results{grid-template-columns:1fr 1fr} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Поиск по базе</h1>
+  <div class="card">
+    <div class="row">
+      <input id="q" type="text" placeholder="Например: скачать виндовс, драйвер, инструкция…" autocomplete="off">
+      <select id="per">
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+      </select>
+      <button id="export" class="btn ghost" title="Скачать результаты CSV">Экспорт</button>
+      <button id="share" class="btn ghost" title="Скопировать ссылку с запросом" style="display:none">Скопировать ссылку</button>
+    </div>
+    <div class="small" id="meta">Загружаю…</div>
+    <div id="err" class="err"></div>
+    <div id="ok" class="ok"></div>
+  </div>
+
+  <div id="cards" class="results" style="display:none"></div>
+  <div id="tableBox" class="table" style="display:none"></div>
+</div>
+
+<script>
+// ====== ВАША ПУБЛИЧНАЯ CSV-ССЫЛКА (первый лист gid=0) ======
+const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRGL9aeAC7JASDu24QmYMDUpkEwbAfB5977LMJ_FBPUoARUo7IBS_z3x4f2xqW8t7_Df6E3apLRwXS7/pub?gid=0&single=true&output=csv";
+// ===========================================================
+
+function parseCSV(text){
+  // устойчивый парсер с учётом кавычек и ;/,
+  const first = text.split(/\\r?\\n/,1)[0]||"";
+  const sep = (first.split(';').length-1) > (first.split(',').length-1) ? ';' : ',';
+  const rows=[], row=[], pushRow=()=>{ if(row.length) rows.push(row.splice(0)); };
+  let cell="", q=false;
+  for(let i=0;i<text.length;i++){
+    const ch=text[i];
+    if(q){ if(ch=='\"'){ if(text[i+1]=='\"'){cell+='\"';i++;} else q=false; } else cell+=ch; continue; }
+    if(ch=='\"'){ q=true; continue; }
+    if(ch==sep){ row.push(cell); cell=""; continue; }
+    if(ch=='\\n'){ row.push(cell); cell=""; pushRow(); continue; }
+    if(ch=='\\r'){ continue; }
+    cell+=ch;
+  }
+  if(cell!==""||row.length){ row.push(cell); pushRow(); }
+  return rows.filter(r=>r.some(c=>String(c).trim()!==""));
+}
+
+const norm = s => String(s||"").toLowerCase().replaceAll('ё','е');
+const escapeHTML = s => String(s).replace(/[&<>\\\"]/g, m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\\"":"&quot;"}[m]||m));
+const urlify = v => {
+  const s = String(v||"").trim();
+  const m = s.match(/^(https?:\\/\\/[\\S]+)$/i);
+  return m?`<a href="${escapeHTML(s)}" target="_blank" rel="noopener">${escapeHTML(s)}</a>`:escapeHTML(s);
+};
+const mark = (html, q) => {
+  if(!q) return html;
+  try{
+    const re = new RegExp("(" + q.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&") + ")", "ig");
+    return html.replace(re, "<mark>$1</mark>");
+  }catch{ return html; }
+};
+
+let HEAD=[], DATA=[], VIEW=[], PER=50;
+
+async function fetchCSV(url){
+  const res = await fetch(url, {cache:"no-store"});
+  if(!res.ok) throw new Error("HTTP "+res.status);
+  const txt = await res.text();
+  if(!txt.trim()) throw new Error("Пустой CSV");
+  return parseCSV(txt);
+}
+
+function asCards(rows, q){
+  const box = document.getElementById('cards');
+  box.innerHTML = rows.map(r=>{
+    const key = r[0]??"";
+    const link = r[1]??"";
+    const keyHtml = mark(escapeHTML(key), q);
+    const linkHtml = mark(urlify(link), q);
+    return \`
+      <div class="cardItem">
+        <div>
+          <h3>\${keyHtml}</h3>
+          <div class="link">\${linkHtml}</div>
+        </div>
+        \${/^https?:\\/\\//i.test(String(link||"")) ? '<a class="btn go" href="'+escapeHTML(link)+'" target="_blank" rel="noopener">Открыть</a>' : ''}
+      </div>\`;
+  }).join('');
+  box.style.display = rows.length ? "grid" : "none";
+}
+
+function asTable(rows, q){
+  const box = document.getElementById('tableBox');
+  const thead = '<tr>'+HEAD.map(h=>'<th>'+escapeHTML(h)+'</th>').join('')+'</tr>';
+  const tbody = rows.map(r=>'<tr>'+r.map(c=>'<td>'+mark(urlify(c), q)+'</td>').join('')+'</tr>').join('');
+  box.innerHTML = '<div class="table"><table><thead>'+thead+'</thead><tbody>'+tbody+'</tbody></table></div>';
+  box.style.display = rows.length ? "block" : "none";
+}
+
+function applyFilter(){
+  const q = norm(document.getElementById('q').value.trim());
+  if(!q){ VIEW = DATA.slice(); } else {
+    VIEW = DATA.filter(r => r.some(c => norm(c).includes(q)));
+  }
+  const per = PER;
+  const firstChunk = VIEW.slice(0, per);
+  // Если таблица имеет 2+ колонки и первые две — это "ключевое слово"+"ссылка", показываем карточки + таблицу
+  const twoCols = HEAD.length === 2;
+  if(twoCols){ asCards(firstChunk, q); document.getElementById('tableBox').style.display='none'; }
+  else { document.getElementById('cards').style.display='none'; asTable(firstChunk, q); }
+  const ok = document.getElementById('ok');
+  ok.textContent = 'Найдено: ' + VIEW.length;
+  ok.style.display = 'block';
+}
+
+function exportCSV(){
+  if(!VIEW.length) return;
+  const out=[HEAD].concat(VIEW).map(r=>r.map(v=>{
+    const s=String(v??'');
+    return /[",\\n;]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+  }).join(',')).join('\\n');
+  const blob=new Blob([out],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='export.csv'; a.click(); URL.revokeObjectURL(a.href);
+}
+
+function setShare(){
+  const v = document.getElementById('q').value.trim();
+  const url = new URL(location.href);
+  if(v) url.searchParams.set('q', v); else url.searchParams.delete('q');
+  history.replaceState(null,'',url);
+  document.getElementById('share').style.display = v?'' : 'none';
+}
+
+document.getElementById('export').addEventListener('click', exportCSV);
+document.getElementById('share').addEventListener('click', async ()=>{
+  try{ await navigator.clipboard.writeText(location.href);
+    const ok=document.getElementById('ok'); ok.textContent='Ссылка скопирована'; ok.style.display='block';
+  }catch{}
+});
+document.getElementById('per').addEventListener('change', e=>{ PER=+e.target.value||50; applyFilter(); });
+
+let deb;
+document.getElementById('q').addEventListener('input', ()=>{
+  clearTimeout(deb); deb=setTimeout(()=>{ setShare(); applyFilter(); }, 150);
+});
+
+(async function init(){
+  const err=document.getElementById('err'); const ok=document.getElementById('ok');
+  try{
+    const rows = await fetchCSV(CSV_URL);
+    HEAD = rows[0]||[];
+    DATA = rows.slice(1);
+    document.getElementById('meta').textContent = \`Источник: Google Sheets CSV · Колонок: \${HEAD.length} · Строк: \${DATA.length}\`;
+    const p = new URL(location.href).searchParams.get('q')||'';
+    if(p) document.getElementById('q').value = p;
+    PER = +document.getElementById('per').value || 50;
+    applyFilter();
+  }catch(e){
+    err.textContent = 'Ошибка: ' + (e.message||e) + '. Проверьте публикацию CSV и доступ по ссылке.';
+    err.style.display='block';
+  }
+})();
+</script>
+</body>
+</html>
